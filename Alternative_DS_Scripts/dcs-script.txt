@@ -1,0 +1,157 @@
+#!/bin/bash
+
+# assembled by Mike Schmitt
+# Version 1.25
+# November 13, 2013
+# RR January 19, 2014: all fixed. RR February 12, 2014: adapted to iMac. DCSPATH=“~/Desktop/DCS/programs”  (I saved it in nano using Brendan instructions). March 5, 2014: local realignment added. March 6 2014: rm seq_both_sscs_readgroups.bam added after clipping, also readgroups.bam.bai files. March 11, 2014: clipping of 4bp each end added after test on 41z samples.
+# RR December 26, 2014: Add seq1.tagstats command line after consensus maker. Update stats files according to 1.27. ALL PROGRAMS in DCS folder were updated with latest versions sent by Mike with 1.27 version. My previous versions used with 1.25 are stored in Programs 1.25. I swapped polbed for p53bed.
+# RR Jan 18 2015: added command to produce mutpos for sscs
+
+# The reads are aligned to one specified reference (eg the entire human genome), are trimmed to a specified BED file (eg specifying coordinates for the mitochondrial genome) and are subsequently realigned to another specified reference (eg the mitochondrial genome). 
+
+# Step 1: Input the path to your reference files here. You will need at least one FASTA reference file and at least one BED file. You can list as many as you like and specify which one to actually use in your experiment in the following step.
+HUMANREF="/Users/risqueslab/Desktop/DCS/reference/human_g1k_v37.fasta"; export HUMANREF
+MTBED="/Users/risqueslab/Desktop/DCS/reference/MT.bed"; export MTBED
+MTREF="/Users/risqueslab/Desktop/DCS/reference/MT2.fasta"; export MTREF
+P53BED="/Users/risqueslab/Desktop/DCS/reference/P53.bed"; export P53BED
+# P53REF="/Users/risqueslab/Desktop/DCS/reference/P53.fasta"; export P53REF
+
+# Step 2: Specify the reference file to use in this particular experiment here.
+ALIGNREF=$HUMANREF; export ALIGNREF
+BEDFILE=$P53BED; export BEDFILE
+FINALREF=$HUMANREF; export FINALREF
+
+#Step 3: Run from the directory containing your read 1 and read 2 files. The files must be named seq1.fq and seq2.fq. 
+#Command line usage: 
+#bash -x dcs-script.txt 2> dcs-script.se
+
+# ***  Automated workflow follows:  ***
+
+#----------------filter for reads with a usable duplex tag, then move the tag into the header--------------
+
+python $DCSPATH/tag_to_header.py --infile1 seq1.fq --infile2 seq2.fq --outfile1  seq1.fq.smi --outfile2 seq2.fq.smi
+
+#---------------process read 1 file----------------------
+
+bwa aln $ALIGNREF seq1.fq.smi > seq1.fq.smi.aln1 2> seq1.fq.smi.aln1.se
+
+bwa samse $ALIGNREF seq1.fq.smi.aln1 seq1.fq.smi > seq1.fq.smi.aln1.sam
+
+samtools view -Sub seq1.fq.smi.aln1.sam > seq1.fq.smi.aln1.bam
+
+samtools sort seq1.fq.smi.aln1.bam seq1.fq.smi.aln1.sort
+
+samtools index seq1.fq.smi.aln1.sort.bam
+
+samtools idxstats seq1.fq.smi.aln1.sort.bam > indexstats.txt
+
+intersectbed -abam seq1.fq.smi.aln1.sort.bam -b $BEDFILE > seq1-bed.fq.smi.aln1.sort.bam
+
+python $DCSPATH/consensusMaker.py --readlength 84 --infile seq1-bed.fq.smi.aln1.sort.bam --tagfile seq1.tagcounts --fastqfile seq1_sscs.fastq --minmem 3 --maxmem 1000 --cutoff .9 --readnum 1 -p > seq1_sscs.tmp
+
+bwa aln $FINALREF seq1_sscs.tmp > seq1_sscs.aln
+
+cat seq1.tagcounts | python $DCSPATH/countField1.py 2| sort -k1,1n > seq1.tagstats
+
+rm seq1_sscs.tmp
+
+bwa samse $FINALREF seq1_sscs.aln seq1_sscs.fastq > seq1_sscs.sam
+
+samtools view -Sbu seq1_sscs.sam | samtools sort - seq1_sscs.sort
+
+samtools index seq1_sscs.sort.bam
+
+#---------------process read 2 file----------------------
+
+bwa aln $ALIGNREF seq2.fq.smi > seq2.fq.smi.aln1 2> seq2.fq.smi.aln1.se
+
+bwa samse $ALIGNREF seq2.fq.smi.aln1 seq2.fq.smi > seq2.fq.smi.aln1.sam
+
+samtools view -Sbu seq2.fq.smi.aln1.sam > seq1.fq.smi.aln1.bam
+
+samtools sort seq1.fq.smi.aln1.bam seq2.fq.smi.aln1.sort
+
+samtools index seq2.fq.smi.aln1.sort.bam
+
+samtools idxstats seq2.fq.smi.aln1.sort.bam
+
+intersectbed -abam seq2.fq.smi.aln1.sort.bam -b $BEDFILE > seq2-bed.fq.smi.aln1.sort.bam
+
+python $DCSPATH/consensusMaker.py --readlength 84 --infile seq2-bed.fq.smi.aln1.sort.bam --tagfile seq2.tagcounts --fastqfile seq2_sscs.fastq --minmem 3 --maxmem 1000 --cutoff .9 --readnum 2 -p > seq2_sscs.tmp
+
+bwa aln $FINALREF seq2_sscs.tmp > seq2_sscs.aln
+
+rm seq2_sscs.tmp
+
+bwa samse $FINALREF seq2_sscs.aln seq2_sscs.fastq > seq2_sscs.sam
+
+samtools view -Sbu seq2_sscs.sam | samtools sort - seq2_sscs.sort
+
+samtools index seq2_sscs.sort.bam
+
+#----------------merge the two files-----------------------
+
+samtools merge -h seq1_sscs.sam seq_both_sscs.bam seq1_sscs.sort.bam seq2_sscs.sort.bam
+
+samtools index seq_both_sscs.bam
+
+python $DCSPATH/DCSfilter.py --infile seq_both_sscs.bam --outfile seq_both_DCS.bam
+
+samtools index seq_both_DCS.bam
+
+rm *.sam
+#----------------clipping final files and local realigment—————
+
+java -jar -Xmx2g ~/Desktop/DCS/picard-tools-1.102/picard-tools-1.102/AddOrReplaceReadGroups.jar INPUT=seq_both_DCS.bam OUTPUT=seq_both_DCS_readgroups.bam RGLB=UW RGPL=Illumina RGPU=ATATAT RGSM=default
+samtools index seq_both_DCS_readgroups.bam
+
+java -Xmx2g -jar ~/Desktop/DCS/GATK/GenomeAnalysisTK.jar -T RealignerTargetCreator -R $FINALREF -I seq_both_DCS_readgroups.bam -o seq_both_DCS.intervals --fix_misencoded_quality_scores
+
+java -Xmx2g -jar ~/Desktop/DCS/GATK/GenomeAnalysisTK.jar -T IndelRealigner -R $FINALREF -I seq_both_DCS_readgroups.bam -targetIntervals seq_both_DCS.intervals -o seq_both_DCS_realigned.bam --fix_misencoded_quality_scores
+
+java -jar -Xmx8g ~/Desktop/DCS/GATK/GenomeAnalysisTK.jar -T ClipReads -I seq_both_DCS_realigned.bam -o seq_both_DCS_clipped.bam -R $FINALREF --cyclesToTrim "1-8,69-84" --clipRepresentation HARDCLIP_BASES 
+
+samtools index seq_both_DCS_clipped.bam
+
+rm seq_both_DCS_readgroups.bam
+rm seq_both_DCS_readgroups.bam.bai
+
+java -jar -Xmx2g ~/Desktop/DCS/picard-tools-1.102/picard-tools-1.102/AddOrReplaceReadGroups.jar INPUT=seq_both_sscs.bam OUTPUT=seq_both_sscs_readgroups.bam RGLB=UW RGPL=Illumina RGPU=ATATAT RGSM=default
+samtools index seq_both_sscs_readgroups.bam
+
+java -jar -Xmx8g ~/Desktop/DCS/GATK/GenomeAnalysisTK.jar -T ClipReads -I seq_both_sscs_readgroups.bam -o seq_both_sscs_clipped.bam -R $FINALREF --cyclesToTrim "1-8,69-84" --clipRepresentation HARDCLIP_BASES --fix_misencoded_quality_scores
+
+samtools index seq_both_sscs_clipped.bam
+
+rm seq_both_sscs_readgroups.bam
+rm seq_both_sscs_readgroups.bam.bai
+
+#----------------generating stats from final file---------------
+# RR: muts_by_read_position.py was modified by Mike to use only subclonal (<10%) mutations. This version has replaced the old one in DCS programs. 
+# To compare old and new version, in 41z samples I used ‘subclonal’ to distinguish the two. From now on, it will be all subclonal.
+# Brendan uploaded yet another version to Github on March 6,2014. There is no difference in the plot obtained with both versions. But I replaced my DCS programs with the newest one.
+# all this section copied from 1.27
+
+samtools mpileup -B -d 500000 -f $FINALREF seq_both_sscs_clipped.bam > seq_both_sscs_clipped.bam.pileup
+
+cat seq_both_sscs_clipped.bam.pileup | python $DCSPATH/count-muts.py -d 20 -C 0.2 -u > seq_both_sscs_clipped.bam.pileup.countmuts
+
+cat seq_both_sscs_clipped.bam.pileup | python $DCSPATH/mut-position.py > seq_both_sscs_clipped.bam.pileup.mutpos
+
+samtools mpileup -B -d 500000 -f $FINALREF seq_both_DCS_clipped.bam > seq_both_DCS_clipped.bam.pileup
+
+cat seq_both_DCS_clipped.bam.pileup | python $DCSPATH/count-muts.py -d 20 -C 0.2 -u > seq_both_DCS_clipped.bam.pileup.countmuts
+
+cat seq_both_DCS_clipped.bam.pileup | python $DCSPATH/mut-position.py > seq_both_DCS_clipped.bam.pileup.mutpos
+
+cat seq_both_DCS_clipped.bam.pileup | python $DCSPATH/mut-position.py -d 20 -n 1 > muts.txt
+
+python $DCSPATH/muts_by_read_position.py --infile seq_both_sscs_clipped.bam.pileup --outfile seq_both_sscs_clipped.bam.mutsbyreadpos.png --rlength 90
+
+python $DCSPATH/muts_by_read_position.py --infile seq_both_DCS_clipped.bam.pileup --outfile seq_both_DCS_clipped.bam.mutsbyreadpos.png --rlength 90
+
+bash ~/Desktop/DCS/programs/get-stats.txt > runstats.txt
+
+
+
+
